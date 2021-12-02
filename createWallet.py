@@ -11,7 +11,7 @@ from blockchain import Account
 from config import Config
 
 
-def createWallet(password, blockHash, blockchain):
+def createWallet(password, blockHash, remoteNode):
     # Create wallet ID
     uid = uuid.uuid4().hex
     hsh = hashlib.sha3_224((password+uid).encode()).hexdigest()
@@ -43,26 +43,16 @@ def createWallet(password, blockHash, blockchain):
 
     newAccount.slt = uid
 
-    blockchain.accounts.append(newAccount)
+    pickleAccount = pickle.dumps(newAccount).hex()
+    """
+    SEND NEW ACCOUNT TO FULL NODE
 
-    # Sync accounts between nodes
-    if len(blockchain.nodes) > 0:
-        c = 0
-        try:
-            whiteIp = requests.get('https://api.ipify.org').content
-            whiteIp = whiteIp.decode()
-        except:
-            print('ipify.org connection denied')
+    1. How do we send objects? Picke? Or should we just form json
+    and send to node so object will be created there?
+    2. We have no need to sync accounts between nodes because
+    it will be done by full node.
 
-        pickleAccount = pickle.dumps(newAccount).hex()
-        for node in blockchain.nodes:
-            try:
-                # requests.post("http://"+node+"/wallet/sync", json={'account': newAccount, 'node': 'http://'+whiteIp+':'+Config().DEFAULT_PORT})
-                requests.post("http://"+node+"/wallet/sync", json={'account': pickleAccount, 'node': 'http://'+Config().DEFAULT_HOST+':'+Config().DEFAULT_PORT})
-                c+=1
-            except:
-                print(f'Access to node {node} denied.')
-
-        print(f'New account synced among {c} nodes')
+    """
+    requests.post(remoteNode+'/remote-wallet/sync', json={'account': pickleAccount})
 
     return address

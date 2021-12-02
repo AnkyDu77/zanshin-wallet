@@ -21,3 +21,5 @@ class Config():
     DEFAULT_PORT = '5000'
 
     UPLOAD_FOLDER = os.path.join(BASEDIR, 'chain')
+
+    REMOTE_NODES = ['http://localhost:5001', 'http://localhost:5002']

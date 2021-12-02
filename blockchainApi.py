@@ -17,6 +17,8 @@ from flask_cors import CORS
 from config import Config
 from blockchain import Blockchain
 
+from remoteNodes import RemoteNodes
+
 from createWallet import createWallet
 from authoriseUser import authoriseUser
 from signTransaction import signTransaction
@@ -30,6 +32,10 @@ app = Flask(__name__)
 CORS(app)
 nodeIdentifier = str(uuid4()).replace('-','')
 blockchain = Blockchain()
+remoteNode = RemoteNodes().connect_to_node()
+print(remoteNode)
+if remoteNode == False:
+    print("All remote nodes are on maintenance now. Please, try again later.")
 
 # Get accounts and pools
 
@@ -49,30 +55,6 @@ Set unique endpoints on full nodes for working with wallets nodes.
 
 """
 
-
-# if len(blockchain.nodes) > 0:
-#     for node in blockchain.nodes:
-#         try:
-#             values = json.loads(requests.get('http://'+node+'/wallet/syncAllAccounts').content)
-#             accounts = pickle.loads(bytes.fromhex(values['ACCOUNTS']))
-#             if accounts == None:
-#                 blockchain.accounts = []
-#             else:
-#                 blockchain.accounts = accounts
-#                 blockchain.coinbase = accounts[0].address
-#
-#             pools = pickle.loads(bytes.fromhex(values['POOLS']))
-#             if pools == None:
-#                 blockchain.pools = []
-#             else:
-#                 blockchain.pools = pools
-#             print('Accounts and pools were added')
-#             break
-#         except:
-#             print(f'Node {node} is not respond or smt went wrong with sync process')
-
-
-
 @app.route('/', methods=['GET'])
 @app.route('/index.html', methods=['GET'])
 def index():
@@ -88,54 +70,68 @@ def sign_up():
     return render_template('sign_up.html')
 
 
-@app.route('/mine', methods=['GET'])
-def mine():
-    lastBlock = blockchain.lastBlock
-    lastProof = lastBlock['proof']
-    proof = blockchain.pow(lastProof)
 
-    blockchain.newTransaction(
-        sender=Config().MINEADDR,
-        timestamp = datetime.now(timezone.utc).timestamp(),
-        recipient=blockchain.coinbase,
-        sendAmount=1
-    )
 
-    # Match trade txs and route trades
-    blockchain.transactTradeOrders()
+@app.route('/wallet/new', methods=['POST'])
+def newWallet():
+    if request.method == 'POST':
+        psw = json.loads(request.data)['password']
+        blockHash = json.loads(requests.get(remoteNode+'/remote-wallet/node/getLastBlockHash').content)['block_hash']
+        address = createWallet(psw, blockHash, remoteNode)
 
-    # Make Transactions
-    blockHash = blockchain.hash(blockchain.chain[-1])
-    for transaction in blockchain.current_transactions:
-        if transaction['symbol'] == 'zsh' or transaction['contract'] == 'zsh':
-            try:
-                account = [account for account in blockchain.accounts if account.address == transaction['recipient']][0]
-                account.makeTransaction(transaction['sendAmount'], blockHash)
-                syncAccState = sendAccountState(account, blockchain.nodes)
-            except:
-                return jsonify({'MSG': f'Something went terribly wrong with transaction to recipient {transaction["recipient"]}'}), 400
-        else:
-            try:
-                blockchain.makePoolTransaction(transaction['contract'], transaction['recipient'], transaction['sendAmount'])
-            except:
-                return jsonify({'MSG': f'Something went terribly wrong with pool transaction to recipient {transaction["recipient"]}'}), 400
+        return jsonify({"ADDRESS": address}), 200
 
-    previousHash = blockchain.hash(lastBlock)
-    block = blockchain.newBlock(proof, previousHash)
 
-    syncStatus = syncPools(blockchain.current_transactions, blockchain.trade_transactions, blockchain.nodes)
 
-    response = {
-        'message': "New Block Forged",
-        'index': block['index'],
-        'transactions': block['transactions'],
-        'proof': block['proof'],
-        'previous_hash': block['previousHash'],
-        'pool_syncing': syncStatus
-    }
 
-    return jsonify(response), 200
+@app.route('/wallet/login', methods=['POST'])
+def loginUser():
+    if request.method == 'POST':
+        psw = json.loads(request.data)['password']
+        pubKey, prKey, address = authoriseUser(psw, blockchain.accounts)
+        if prKey == False:
+            return jsonify({'MSG': 'Wrong password or there is no wallet'}), 400
 
+        blockchain.prkey = prKey
+        blockchain.pubKey = pubKey
+        print(f'\n====\nLogin Public Key: {blockchain.pubKey}\n\n')
+        return jsonify({'MSG': True, 'ADDRESS': address}), 200
+
+
+
+@app.route('/wallet/logout', methods=['GET'])
+def logoutUser():
+    blockchain.prkey = None
+    blockchain.pubKey = None
+    return jsonify({'MSG': True}), 200
+
+
+@app.route('/wallet/getBalance', methods=['POST'])
+def gBalance():
+    respondList = []
+    address = json.loads(request.data)['address']
+    nativeTokenName = Config().NATIVE_TOKEN_NAME.upper()
+    nativeBalance = blockchain.getBalance(address)
+    nativeBalanceDict = {'token': nativeTokenName, 'balance': nativeBalance}
+    respondList.append(nativeBalanceDict)
+
+    # Get pools balances for user adddress
+    for pool in blockchain.pools:
+        poolSymbol = pool.symbol
+        userBalance = pool.accountsBalance[address]
+        balanceDict = {'token': poolSymbol, 'balance': userBalance}
+        respondList.append(balanceDict)
+
+    return jsonify({'BALACNES': respondList}), 200
+
+
+# NEW TRANSACTION
+"""
+1. Sign transaction localy.
+2. Remote expenditure proof.
+3. Remote newTransaction.
+
+"""
 @app.route('/transactions/new', methods=['POST'])
 def newTx():
 
@@ -265,6 +261,103 @@ def newTx():
     return jsonify({'MSG': syncStatus}), 201
 
 
+"""
+Get trade orders and executed transactions pool
+"""
+@app.route('/getTxPool', methods=['GET'])
+def txPool():
+    response = {
+        'txPool': blockchain.current_transactions
+    }
+
+    return jsonify(response), 200
+
+
+@app.route('/getTradeOrders', methods=['GET'])
+def tradeOrders():
+    response = {
+        'tradeOrders': blockchain.trade_transactions
+    }
+
+    return jsonify(response), 200
+
+
+# if len(blockchain.nodes) > 0:
+#     for node in blockchain.nodes:
+#         try:
+#             values = json.loads(requests.get('http://'+node+'/wallet/syncAllAccounts').content)
+#             accounts = pickle.loads(bytes.fromhex(values['ACCOUNTS']))
+#             if accounts == None:
+#                 blockchain.accounts = []
+#             else:
+#                 blockchain.accounts = accounts
+#                 blockchain.coinbase = accounts[0].address
+#
+#             pools = pickle.loads(bytes.fromhex(values['POOLS']))
+#             if pools == None:
+#                 blockchain.pools = []
+#             else:
+#                 blockchain.pools = pools
+#             print('Accounts and pools were added')
+#             break
+#         except:
+#             print(f'Node {node} is not respond or smt went wrong with sync process')
+
+
+
+
+
+
+@app.route('/mine', methods=['GET'])
+def mine():
+    lastBlock = blockchain.lastBlock
+    lastProof = lastBlock['proof']
+    proof = blockchain.pow(lastProof)
+
+    blockchain.newTransaction(
+        sender=Config().MINEADDR,
+        timestamp = datetime.now(timezone.utc).timestamp(),
+        recipient=blockchain.coinbase,
+        sendAmount=1
+    )
+
+    # Match trade txs and route trades
+    blockchain.transactTradeOrders()
+
+    # Make Transactions
+    blockHash = blockchain.hash(blockchain.chain[-1])
+    for transaction in blockchain.current_transactions:
+        if transaction['symbol'] == 'zsh' or transaction['contract'] == 'zsh':
+            try:
+                account = [account for account in blockchain.accounts if account.address == transaction['recipient']][0]
+                account.makeTransaction(transaction['sendAmount'], blockHash)
+                syncAccState = sendAccountState(account, blockchain.nodes)
+            except:
+                return jsonify({'MSG': f'Something went terribly wrong with transaction to recipient {transaction["recipient"]}'}), 400
+        else:
+            try:
+                blockchain.makePoolTransaction(transaction['contract'], transaction['recipient'], transaction['sendAmount'])
+            except:
+                return jsonify({'MSG': f'Something went terribly wrong with pool transaction to recipient {transaction["recipient"]}'}), 400
+
+    previousHash = blockchain.hash(lastBlock)
+    block = blockchain.newBlock(proof, previousHash)
+
+    syncStatus = syncPools(blockchain.current_transactions, blockchain.trade_transactions, blockchain.nodes)
+
+    response = {
+        'message': "New Block Forged",
+        'index': block['index'],
+        'transactions': block['transactions'],
+        'proof': block['proof'],
+        'previous_hash': block['previousHash'],
+        'pool_syncing': syncStatus
+    }
+
+    return jsonify(response), 200
+
+
+
 @app.route('/transactions/sync', methods=['POST'])
 def syncTxs():
     node = request.json['node']
@@ -282,22 +375,22 @@ def syncTxs():
         return jsonify({'MSG': 'Node is not registered'}), 400
 
 
-@app.route('/getTxPool', methods=['GET'])
-def txPool():
-    response = {
-        'txPool': blockchain.current_transactions
-    }
-
-    return jsonify(response), 200
-
-
-@app.route('/getTradeOrders', methods=['GET'])
-def tradeOrders():
-    response = {
-        'tradeOrders': blockchain.trade_transactions
-    }
-
-    return jsonify(response), 200
+# @app.route('/getTxPool', methods=['GET'])
+# def txPool():
+#     response = {
+#         'txPool': blockchain.current_transactions
+#     }
+#
+#     return jsonify(response), 200
+#
+#
+# @app.route('/getTradeOrders', methods=['GET'])
+# def tradeOrders():
+#     response = {
+#         'tradeOrders': blockchain.trade_transactions
+#     }
+#
+#     return jsonify(response), 200
 
 
 @app.route('/chain', methods=['GET'])
@@ -396,29 +489,7 @@ def sendChData():
     )
 
 
-@app.route('/wallet/new', methods=['POST'])
-def newWallet():
-    if request.method == 'POST':
-        psw = json.loads(request.data)['password']
-        blockHash = blockchain.hash(blockchain.chain[-1])
-        if len(blockchain.accounts) == 0:
-            address = createWallet(psw, blockHash, blockchain)
-            blockchain.coinbase = address
 
-            # Add account to pools
-            if len(blockchain.pools) > 0:
-                for pool in blockchain.pools:
-                    pool.accountsBalance[address]=0.0
-
-        else:
-            address = createWallet(psw, blockHash, blockchain)
-
-            # Add account to pools
-            if len(blockchain.pools) > 0:
-                for pool in blockchain.pools:
-                    pool.accountsBalance[address]=0.0
-
-        return jsonify({"ADDRESS": address}), 200
 
 
 @app.route('/wallet/syncAllAccounts', methods=['GET'])
@@ -483,45 +554,7 @@ def sAccState():
 
 
 
-@app.route('/wallet/login', methods=['POST'])
-def loginUser():
-    if request.method == 'POST':
-        psw = json.loads(request.data)['password']
-        pubKey, prKey, address = authoriseUser(psw, blockchain.accounts)
-        if prKey == False:
-            return jsonify({'MSG': 'Wrong password or there is no wallet'}), 400
 
-        blockchain.prkey = prKey
-        blockchain.pubKey = pubKey
-        print(f'\n====\nLogin Public Key: {blockchain.pubKey}\n\n')
-        return jsonify({'MSG': True, 'ADDRESS': address}), 200
-
-
-
-@app.route('/wallet/logout', methods=['GET'])
-def logoutUser():
-    blockchain.prkey = None
-    blockchain.pubKey = None
-    return jsonify({'MSG': True}), 200
-
-
-@app.route('/wallet/getBalance', methods=['POST'])
-def gBalance():
-    respondList = []
-    address = json.loads(request.data)['address']
-    nativeTokenName = Config().NATIVE_TOKEN_NAME.upper()
-    nativeBalance = blockchain.getBalance(address)
-    nativeBalanceDict = {'token': nativeTokenName, 'balance': nativeBalance}
-    respondList.append(nativeBalanceDict)
-
-    # Get pools balances for user adddress
-    for pool in blockchain.pools:
-        poolSymbol = pool.symbol
-        userBalance = pool.accountsBalance[address]
-        balanceDict = {'token': poolSymbol, 'balance': userBalance}
-        respondList.append(balanceDict)
-
-    return jsonify({'BALACNES': respondList}), 200
 
 
 @app.route('/wallet/getAccounts', methods=['GET'])
@@ -578,6 +611,7 @@ def sTokensPoolsState():
     else:
         print('Pools syncing denied. Node is not registered')
         return jsonify({'MSG': 'Pools syncing denied. Node is not registered'}), 400
+
 
 
 if __name__ == '__main__':
