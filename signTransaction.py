@@ -3,7 +3,7 @@ from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
 
 def signTransaction(msg, prKey):
-
+    
     msg = msg.encode('utf-8')
 
     signKey = RSA.import_key(prKey)

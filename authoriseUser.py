@@ -4,35 +4,35 @@ import hashlib
 from Crypto.PublicKey import RSA
 from config import Config
 
-def authoriseUser(password, accounts):
+def authoriseUser(password):
 
-    # Get keys names
-    keysNames = []
+    """
+    Gets user password and opens prKey file which suits for the password.
+    Returns:
+        (a) public key, private key and wallet address if password is correct;
+        (b) False, False, False if password is incorrect or there is no wallets files.
+
+    """
     fileNames = os.listdir(os.path.join(Config().BASEDIR, 'keys'))
-    address = None
-    for account in accounts:
-        hsh = hashlib.sha3_224((password+account.slt).encode()).hexdigest()
-        for name in fileNames:
-            if name.split('_')[0] == hsh:
-                address = account.address
-                keysNames.append(name)
-
-    # Get keys names
-    # keysNames = os.listdir(os.path.join(Config().BASEDIR, 'keys'))
     try:
-        # Get private key name
-        prKeyName = [name for name in keysNames if name.split('_')[1] == 'prKey.der'][0]
+        prKeyNames = [name for name in fileNames if name.split('_')[1] == 'prKey.der']
+
     except:
         return False, False, False
 
-    # Get and decrypt private key
-    try:
-        with open(os.path.join(os.path.join(Config().BASEDIR, 'keys'), prKeyName), 'rb') as keyFile:
-            key = RSA.import_key(keyFile.read(), passphrase=password)
-    except:
-        return False, False, False
+    for prKeyName in prKeyNames:
+        try:
+            with open(os.path.join(os.path.join(Config().BASEDIR, 'keys'), prKeyName), 'rb') as keyFile:
+                key = RSA.import_key(keyFile.read(), passphrase=password)
+            prKey = key.export_key()
+            pubKey = key.public_key().export_key(format='DER')
 
-    prKey = key.export_key()
-    pubKey = key.public_key().export_key(format='DER')
+            pubHash = hashlib.sha3_224(pubKey).hexdigest()
+            address = Config().IDSTR+pubHash
 
-    return pubKey, prKey, address
+            return pubKey, prKey, address
+
+        except:
+            pass
+
+    return False, False, False

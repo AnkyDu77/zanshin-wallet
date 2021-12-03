@@ -70,11 +70,17 @@ def sign_up():
     return render_template('sign_up.html')
 
 
-
-
 @app.route('/wallet/new', methods=['POST'])
-def newWallet():
+def newWallet(remoteNode=remoteNode):
     if request.method == 'POST':
+
+        """ Check if there is a connection to remote nodes """
+        if remoteNode == False:
+            remoteNode = RemoteNodes().connect_to_node()
+            if remoteNode == False:
+                return jsonify({"MSG": "All remote nodes are on maintenance now. Please, try again later."}), 400
+
+
         psw = json.loads(request.data)['password']
         blockHash = json.loads(requests.get(remoteNode+'/remote-wallet/node/getLastBlockHash').content)['block_hash']
         address = createWallet(psw, blockHash, remoteNode)
@@ -82,21 +88,25 @@ def newWallet():
         return jsonify({"ADDRESS": address}), 200
 
 
-
-
 @app.route('/wallet/login', methods=['POST'])
 def loginUser():
     if request.method == 'POST':
+
+        """ Check if there is a connection to remote nodes """
+        if remoteNode == False:
+            remoteNode = RemoteNodes().connect_to_node()
+            if remoteNode == False:
+                return jsonify({"MSG": "All remote nodes are on maintenance now. Please, try again later."}), 400
+
+
         psw = json.loads(request.data)['password']
-        pubKey, prKey, address = authoriseUser(psw, blockchain.accounts)
+        pubKey, prKey, address = authoriseUser(psw)
         if prKey == False:
             return jsonify({'MSG': 'Wrong password or there is no wallet'}), 400
 
         blockchain.prkey = prKey
         blockchain.pubKey = pubKey
-        print(f'\n====\nLogin Public Key: {blockchain.pubKey}\n\n')
         return jsonify({'MSG': True, 'ADDRESS': address}), 200
-
 
 
 @app.route('/wallet/logout', methods=['GET'])
@@ -106,34 +116,34 @@ def logoutUser():
     return jsonify({'MSG': True}), 200
 
 
+
+
 @app.route('/wallet/getBalance', methods=['POST'])
-def gBalance():
-    respondList = []
-    address = json.loads(request.data)['address']
-    nativeTokenName = Config().NATIVE_TOKEN_NAME.upper()
-    nativeBalance = blockchain.getBalance(address)
-    nativeBalanceDict = {'token': nativeTokenName, 'balance': nativeBalance}
-    respondList.append(nativeBalanceDict)
-
-    # Get pools balances for user adddress
-    for pool in blockchain.pools:
-        poolSymbol = pool.symbol
-        userBalance = pool.accountsBalance[address]
-        balanceDict = {'token': poolSymbol, 'balance': userBalance}
-        respondList.append(balanceDict)
-
-    return jsonify({'BALACNES': respondList}), 200
+def gBalance(remoteNode=remoteNode):
+    if request.method == 'POST':
+        """ Check if there is a connection to remote nodes """
+        if remoteNode == False:
+            remoteNode = RemoteNodes().connect_to_node()
+            if remoteNode == False:
+                return jsonify({"MSG": "All remote nodes are on maintenance now. Please, try again later."}), 400
 
 
-# NEW TRANSACTION
+        address = json.loads(request.data)['address']
+        balances = json.loads(requests.post(remoteNode+'/remote-wallet/getBalance', json={'address': address}).content)
+        return jsonify(balances), 200
+
+
+
 """
+NEW TRANSACTION
+
 1. Sign transaction localy.
 2. Remote expenditure proof.
 3. Remote newTransaction.
 
 """
 @app.route('/transactions/new', methods=['POST'])
-def newTx():
+def newTx(remoteNode=remoteNode):
 
     # values = request.get_json()
     values = json.loads(request.data)
@@ -148,6 +158,9 @@ def newTx():
         return jsonify({'MSG': 'Transaction type error! Provide "common" or "trade" transaction'}), 400
 
     if type == 'common':
+
+        if values['comissionAmount'] < Config().MIN_COMISSION:
+            values['comissionAmount'] = Config().MIN_COMISSION
 
         timestamp = datetime.now(timezone.utc).timestamp()
         symbol = values['symbol']
@@ -178,28 +191,22 @@ def newTx():
         try:
             # Sign message
             signiture = signTransaction(str(transactionDict), blockchain.prkey)
+
         except:
             return jsonify({'MSG': 'Simple tx not accepted. Try to sign in first'}), 400
 
-        try:
-            # Proof expenditure amount
-            account = [account for account in blockchain.accounts if account.address == sender][0]
+        transactionDict['signiture'] = signiture
+        transactionDict['type'] = type
+        transactionDict['publicKey'] = blockchain.pubKey.hex()
 
-            blockHash = blockchain.hash(blockchain.chain[-1])
-            proofExpenditure = account.proofExpenditure(sendAmount, blockHash)
+        # return jsonify(transactionDict), 201
+        syncStatus = json.loads(requests.post(remoteNode+'/remote-wallet/transactions/new', json=transactionDict).content)['MSG']
 
-            if proofExpenditure == False:
-                return jsonify({'MSG': 'Spend amount exceeds account balance'}), 400
-
-        except:
-            return jsonify({'MSG': 'Smth went terribly wrong while expenditure approve process'}), 400
-
-        index, syncStatus = blockchain.newTransaction(type=type, timestamp=timestamp,txsig=signiture, symbol=symbol, contract=contract,\
-                                        sender=sender, recipient=recipient,\
-                                        sendAmount=sendAmount,\
-                                        comissionAmount=comissionAmount)
 
     elif type == 'trade':
+
+        if values['comissionAmount'] < Config().MIN_COMISSION:
+            values['comissionAmount'] = Config().MIN_COMISSION
 
         timestamp = datetime.now(timezone.utc).timestamp()
         sender = values['sender']
@@ -227,36 +234,14 @@ def newTx():
         try:
             # Sign message
             signiture = signTransaction(str(transactionDict), blockchain.prkey)
+            print(f'\n\nTx signiture: {signiture}\n\n')
         except:
             return jsonify({'MSG': 'Trade tx not accepted. Try to sign in first'}), 400
 
-        if send == 'zsh':
-            try:
-                # Proof expenditure amount
-                account = [account for account in blockchain.accounts if account.address == sender][0]
-
-                blockHash = blockchain.hash(blockchain.chain[-1])
-                proofExpenditure = account.proofExpenditure(sendVol, blockHash)
-
-                if proofExpenditure == False:
-                    return jsonify({'MSG': 'Spend amount exceeds account balance'}), 400
-            except:
-                return jsonify({'MSG': 'Smth went terribly wrong while expenditure approve process'}), 400
-
-        # Proof pool tokens expenditure
-        else:
-            try:
-                proofPoolExpenditure = blockchain.proofPoolExpenditure(send, sender, sendVol)
-                if proofPoolExpenditure == False:
-                    return jsonify({'MSG': 'Spend amount exceeds account balance'}), 400
-            except:
-                return jsonify({'MSG': 'Smth went terribly wrong while pool expenditure approve process'}), 400
-
-
-        index, syncStatus = blockchain.newTransaction(type=type, timestamp=timestamp,txsig=signiture, sender=sender, symbol=symbol,\
-                        price=price, send=send, sendVol=sendVol, get=get,\
-                        getVol=getVol, comissionAmount=comissionAmount)
-
+        transactionDict['signiture'] = signiture
+        transactionDict['type'] = type
+        transactionDict['publicKey'] = blockchain.pubKey.hex()
+        syncStatus = json.loads(requests.post(remoteNode+'/remote-wallet/transactions/new', json=transactionDict).content)['MSG']
 
     return jsonify({'MSG': syncStatus}), 201
 
@@ -265,19 +250,29 @@ def newTx():
 Get trade orders and executed transactions pool
 """
 @app.route('/getTxPool', methods=['GET'])
-def txPool():
-    response = {
-        'txPool': blockchain.current_transactions
-    }
+def txPool(remoteNode=remoteNode):
+
+    """ Check if there is a connection to remote nodes """
+    if remoteNode == False:
+        remoteNode = RemoteNodes().connect_to_node()
+        if remoteNode == False:
+            return jsonify({"MSG": "All remote nodes are on maintenance now. Please, try again later."}), 400
+
+    response = json.loads(requests.get(remoteNode+'/getTxPool').content)
 
     return jsonify(response), 200
 
 
 @app.route('/getTradeOrders', methods=['GET'])
-def tradeOrders():
-    response = {
-        'tradeOrders': blockchain.trade_transactions
-    }
+def tradeOrders(remoteNode=remoteNode):
+
+    """ Check if there is a connection to remote nodes """
+    if remoteNode == False:
+        remoteNode = RemoteNodes().connect_to_node()
+        if remoteNode == False:
+            return jsonify({"MSG": "All remote nodes are on maintenance now. Please, try again later."}), 400
+
+    response = json.loads(requests.get(remoteNode+'/getTradeOrders').content)
 
     return jsonify(response), 200
 

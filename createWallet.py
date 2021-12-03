@@ -12,6 +12,12 @@ from config import Config
 
 
 def createWallet(password, blockHash, remoteNode):
+    """
+    CREATES NEW WALLET AND SENDS IT TO FULL NODE
+    Returns:
+        Wallet address
+    """
+
     # Create wallet ID
     uid = uuid.uuid4().hex
     hsh = hashlib.sha3_224((password+uid).encode()).hexdigest()
@@ -44,15 +50,6 @@ def createWallet(password, blockHash, remoteNode):
     newAccount.slt = uid
 
     pickleAccount = pickle.dumps(newAccount).hex()
-    """
-    SEND NEW ACCOUNT TO FULL NODE
-
-    1. How do we send objects? Picke? Or should we just form json
-    and send to node so object will be created there?
-    2. We have no need to sync accounts between nodes because
-    it will be done by full node.
-
-    """
     requests.post(remoteNode+'/remote-wallet/sync', json={'account': pickleAccount})
 
     return address
